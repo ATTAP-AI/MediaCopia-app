@@ -16,10 +16,44 @@ MC.sdGuide = (() => {
   const TOKEN_CODES = new Set([1004, 4004, 4005, 4006, 4007]);   // missing, invalid or expired token: sign in again once
   const DETAILS_BATCH = 500;
   const g = () => MC.state.settings.guide || {};
-  let tok = null;                 // { token, exp, user } — kept in memory only (they allow 100 sign-ins a day)
+  let tok = null;                 // { token, exp, user }: a sign-in lasts 24 hours, and they allow 100 a day
   const details = {};             // programID → details, or null when it couldn't be fetched
   const inflight = new Set();
   let items = [];                 // the loaded schedule (normalized, see livetv.js)
+  let loadedAt = 0;
+
+  /* This device's copy of the sign-in and the loaded guide, encrypted with the vault key in IndexedDB (never synced or
+     backed up). Reopening MediaCopia reuses it, so a reload doesn't sign in again or fetch the whole guide: Schedules
+     Direct asks apps to refresh at most once an hour, and allows 100 sign-ins a day. */
+  const CACHE = 'sdGuide', CACHE_AAD = 'mediacopia-sdguide', FRESH = 2 * 3600e3;
+  let cacheP = null, saveTimer = 0;
+  const readCache = () => cacheP ||= (async () => {
+    const k = MC.vault.key(), rec = await MC.vault.meta.get(CACHE);
+    return k && rec ? MC.crypto.decryptJSON(k, rec.iv, rec.ct, CACHE_AAD) : null;
+  })().catch(() => null);   // locked, or the key changed after joining another device: start fresh
+  async function writeCache() {
+    const k = MC.vault.key(), cfg = g();
+    if (!k || !cfg.lineup) return;
+    const stations = {}, progs = [], keep = {};
+    items.forEach(it => {
+      stations[it.row] ||= { channel: it.channel, channelName: it.channelName, affiliate: it.affiliate, num: it.num, logo: it.logo, logoDark: it.logoDark };
+      progs.push([it.row, it.pid, it.start, it.end, (it.isNew ? 1 : 0) | (it.live ? 2 : 0)]);
+      if (details[it.pid]) keep[it.pid] = details[it.pid];   // not the failures: those are retried next time
+    });
+    const data = { user: cfg.user, lineup: cfg.lineup, token: tok?.user === cfg.user ? tok : null, at: loadedAt, stations, progs, details: keep };
+    const { iv, ct } = await MC.crypto.encryptJSON(k, data, CACHE_AAD);
+    await MC.vault.meta.set(CACHE, { iv, ct });
+    cacheP = Promise.resolve(data);
+  }
+  const saveSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => writeCache().catch(e => console.warn('MediaCopia: couldn’t keep the guide on this device', e)), 1500); };
+  const clearCache = () => { clearTimeout(saveTimer); cacheP = null; loadedAt = 0; return MC.vault.meta.set(CACHE, null).catch(() => {}); };
+  const blank = { show: '', ep: '', se: '', genres: [], year: '', summary: '', image: '' };
+  function restore(c) {
+    Object.assign(details, c.details || {});
+    items = (c.progs || []).map(([row, pid, start, end, f]) => ({ key: `${row}|${start}`, pid, row, ...c.stations[row], start, end, isNew: !!(f & 1), live: !!(f & 2), ...blank, genres: [] }));
+    items.forEach(apply);
+    loadedAt = c.at;
+  }
 
   class SDError extends Error { constructor(msg, code) { super(msg); this.code = code; } }
   const sha1 = async s => [...new Uint8Array(await crypto.subtle.digest('SHA-1', new TextEncoder().encode(s)))].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -31,8 +65,13 @@ MC.sdGuide = (() => {
     return { token: d.token, exp: (d.tokenExpires ? d.tokenExpires * 1000 : Date.now() + 20 * 3600e3) - 600e3, user };
   }
   async function token(creds = g(), fresh = false) {
+    if (!fresh && !tok && creds === g()) {   // reopened: the sign-in this device kept, if it's still good
+      const c = await readCache();
+      if (c?.token && c.token.user === creds.user && c.token.exp > Date.now()) tok = c.token;
+    }
     if (!fresh && tok && tok.user === creds.user && tok.exp > Date.now()) return tok.token;
     tok = await signIn(creds.user, creds.hash);
+    if (creds === g() && loadedAt) saveSoon();
     return tok.token;
   }
   async function api(path, { method = 'GET', body, creds, retried = false } = {}) {
@@ -99,19 +138,24 @@ MC.sdGuide = (() => {
     });
     if (!second || !chosen) return;
     MC.update(s => { s.settings.guide = { ...creds, country, lineup: chosen.id, lineupName: chosen.name, at: new Date().toISOString() }; });
-    items = []; MC.ui.live && (MC.ui.live.at = 0);
+    items = []; await clearCache(); MC.ui.live && (MC.ui.live.at = 0);
     MC.toast(`Full guide on: ${chosen.name}`);
   }
   async function disconnect() {
     if (!(await MC.confirm('Turn off the full guide?', 'MediaCopia forgets your Schedules Direct sign-in and lineup, and goes back to the basic TVmaze listings. Your Schedules Direct account itself is unchanged.', 'Turn off'))) return;
-    tok = null; items = [];
+    tok = null; items = []; await clearCache();
     MC.update(s => { delete s.settings.guide; });
     MC.ui.live && (MC.ui.live.at = 0);
   }
 
   /* ---- the schedule for every channel in your lineup ---- */
-  async function load() {
+  // force: skip this device's copy (the "Try again" button).
+  async function load(force = false) {
     const cfg = g();
+    if (!force && !items.length) {
+      const c = await readCache();
+      if (c && c.lineup === cfg.lineup && c.user === cfg.user && Date.now() - c.at < FRESH && c.progs?.length) { restore(c); return items; }
+    }
     const lu = await api(`lineups/${encodeURIComponent(cfg.lineup)}`);
     const st = Object.fromEntries((lu.stations || []).map(s => [s.stationID, s]));
     const chan = {};   // stationID → lowest channel number on this lineup
@@ -125,15 +169,17 @@ MC.sdGuide = (() => {
       if (!sta || !Array.isArray(s.programs)) return [];
       const { logo, logoDark } = logos(sta);
       return s.programs.map(p => {
-        const start = Date.parse(p.airDateTime), key = `${s.stationID}|${p.airDateTime}`;
+        const start = Date.parse(p.airDateTime), key = `${s.stationID}|${start}`;
         if (!start || seen.has(key)) return null;
         seen.add(key);
         return { key, pid: p.programID, row: s.stationID, channel: sta.callsign || sta.name, channelName: sta.name, affiliate: sta.affiliate || '',
           num: chan[s.stationID], logo, logoDark, start, end: start + (p.duration || 1800) * 1000, isNew: !!p.new, live: p.liveTapeDelay === 'Live',
-          show: '', ep: '', se: '', genres: [], year: '', summary: '', image: '' };
+          ...blank, genres: [] };
       }).filter(Boolean);
     });
     items.forEach(apply);
+    loadedAt = Date.now();
+    saveSoon();
     return items;
   }
   /* Station logos come in versions for light and dark backgrounds (category: light, gray, dark, white). Many are white
@@ -145,6 +191,7 @@ MC.sdGuide = (() => {
     return { logo: light, logoDark: dark };
   };
   const apply = it => {
+    if (art[it.pid]) it.image = artUrl(art[it.pid]);
     const d = details[it.pid];
     if (d === undefined) return;
     Object.assign(it, d || { show: 'Listing unavailable' });
@@ -159,6 +206,42 @@ MC.sdGuide = (() => {
       kind: p.showType || '',
     };
   };
+  /* ---- show artwork, for the "on now" cards only ----
+     Each image counts toward the account's daily download limit, and asking for missing images can get the account
+     blocked for a day, so: only the cards on screen, at most ART_MAX per page visit, never the same URI twice after a
+     failure, and none at all after a few failures (the limit may have been reached). Their image URIs may change, so
+     they're kept in memory only, not with this device's copy of the guide; the browser's cache keeps the images. */
+  const ART_MAX = 60, ART_FAILS = 6;
+  const art = {};                 // programID → image URI, or null when it has none (or it failed)
+  let artCount = 0, artFails = 0, artBusy = false;
+  const ASPECT = { '2x3': 0, '3x4': 1, '4x3': 3, '16x9': 4 }, SIZE = { Md: 0, Sm: 1, Lg: 2, Ms: 3 };
+  const CATEGORY = ['Poster Art', 'Box Art', 'Banner-L1', 'Banner-L2', 'Iconic', 'Cast in Character', 'Scene Still'];
+  const rankArt = a => (ASPECT[a.aspect] ?? 5) * 100 + (CATEGORY.includes(a.category) ? CATEGORY.indexOf(a.category) : 9) * 10 + (SIZE[a.size] ?? 4);
+  const pickArt = list => (Array.isArray(list) ? list : []).filter(a => a?.uri && a.category !== 'Logo').sort((a, b) => rankArt(a) - rankArt(b))[0]?.uri || null;
+  // A full URI points at Amazon S3; a partial one goes to Schedules Direct (through the relay), which redirects there.
+  const artUrl = uri => /^https?:/i.test(uri) ? uri : tok ? `${BASE}image/${uri}?token=${encodeURIComponent(tok.token)}` : '';
+  async function ensureArt(pids) {
+    if (artBusy || artFails >= ART_FAILS) return false;
+    const need = [...new Set(pids)].filter(id => id && !(id in art)).slice(0, ART_MAX - artCount);
+    if (!need.length) return false;
+    artBusy = true;
+    try {
+      const res = await api('metadata/programs/', { method: 'POST', body: need });
+      (Array.isArray(res) ? res : []).forEach(r => {
+        const uri = pickArt(r?.data);
+        if (r?.programID) need.forEach(id => { if (id === r.programID || id.startsWith(r.programID)) art[id] ??= uri; });
+      });
+    } catch { artFails++; } finally { artBusy = false; }
+    need.forEach(id => { art[id] ??= null; if (art[id]) artCount++; });
+    items.forEach(apply);
+    return true;
+  }
+  function artFailed(pid) {   // an image didn't load: don't ask for it again
+    if (pid) art[pid] = null;
+    items.forEach(it => { if (it.pid === pid) it.image = ''; });
+    artFails++;
+  }
+
   /* Fetch details (titles, episodes, descriptions) for these programs, in batches; resolves once they're applied. */
   async function ensure(pids) {
     const need = [...new Set(pids)].filter(id => id && !(id in details) && !inflight.has(id));
@@ -173,12 +256,13 @@ MC.sdGuide = (() => {
       }
     } finally { need.forEach(id => inflight.delete(id)); }
     items.forEach(apply);
+    saveSoon();
     return true;
   }
 
   return {
     connected: () => !!(g().user && g().hash && g().lineup),
-    config: g, setup, disconnect, load, ensure,
+    config: g, setup, disconnect, load, ensure, ensureArt, artFailed, loadedAt: () => loadedAt,
     pending: () => inflight.size > 0,
   };
 })();

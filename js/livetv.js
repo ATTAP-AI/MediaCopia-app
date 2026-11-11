@@ -47,7 +47,7 @@ window.MC = window.MC || {};
     Object.assign(ui, { loading: true, error: '', cc, src, sd });
     draw();
     try {
-      if (sd) ui.items = await MC.sdGuide.load();
+      if (sd) ui.items = await MC.sdGuide.load(force);
       else {
         const day = 864e5, now = Date.now();
         const dates = [...new Set([now - day, now, now + day].map(t => MC.isoDate(new Date(t))))];
@@ -55,7 +55,7 @@ window.MC = window.MC || {};
         const seen = new Set();
         ui.items = days.flat().map(norm).filter(p => p && !seen.has(p.key) && seen.add(p.key));
       }
-      ui.at = Date.now();
+      ui.at = (sd && MC.sdGuide.loadedAt()) || Date.now();   // a guide kept on this device refreshes 2 hours after it was fetched
     } catch (e) { ui.error = sd ? `Couldn’t load your full guide: ${e.message || e}` : `Couldn’t load TV listings (${e.message || e}).`; }
     ui.loading = false;
     draw();
@@ -116,8 +116,8 @@ window.MC = window.MC || {};
     const nowCards = onNow.slice(0, 12).map(p => {
       const pct = Math.round((now - p.start) / (p.end - p.start) * 100), f = flag(p);
       return `<button class="live-card ${f}" type="button" data-action="rec-details" data-rec="${toRec(p)}">
-        ${p.image ? `<img src="${E(p.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`
-          : p.logo && p.logoDark ? logoImg(p.logo, 'lt') + logoImg(p.logoDark, 'dk')
+        ${p.image ? `<img class="art" src="${E(p.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-pid="${E(p.pid || '')}" onerror="MC.liveArtFailed(this)">` : ''}${
+          p.logo && p.logoDark ? logoImg(p.logo, 'lt') + logoImg(p.logoDark, 'dk')
           : p.logoDark ? logoImg(p.logoDark, 'on-dark') : p.logo ? logoImg(p.logo, '') : ''}
         <span class="lc-body"><span class="lc-ch">${p.num ? `${E(p.num)} · ` : ''}${E(p.channel)}${f === 'mine' ? ' · ★ yours' : f === 'foryou' ? ' · for you' : ''}${p.live ? ' · LIVE' : p.isNew ? ' · NEW' : ''}</span>
           <b>${E(label(p))}</b><span class="lc-ep">${E([p.se, p.ep].filter(Boolean).join(' · '))}</span>
@@ -143,6 +143,7 @@ window.MC = window.MC || {};
     if (sd) {
       const need = [...onNow.slice(0, 600), ...shown.flat()].filter(p => !p.show).map(p => p.pid);
       if (need.length) MC.sdGuide.ensure(need).then(changed => { if (changed) draw(); }).catch(() => {});
+      MC.sdGuide.ensureArt(onNow.slice(0, 12).map(p => p.pid)).then(changed => { if (changed) draw(); }).catch(() => {});
     }
     const pos = t => Math.min(100, Math.max(0, (t - ws) / (we - ws) * 100));
     const nowLine = now >= ws && now < we ? `<i class="lg-nowline" style="left:${pos(now)}%"></i>` : '';
@@ -212,4 +213,6 @@ window.MC = window.MC || {};
   MC.actions['live-shift'] = el => { const by = +el.dataset.by; ui.offset = by ? Math.max(0, Math.min(7, ui.offset + by)) : 0; draw(); };
   MC.actions['live-all'] = () => { ui.all = !ui.all; draw(); };
   MC.actions['live-reload'] = () => load(true);
+  // Show artwork that didn't load: the channel logo behind it shows instead (and the full guide won't ask for it again).
+  MC.liveArtFailed = el => { if (el.dataset.pid && MC.ui.live?.sd) MC.sdGuide.artFailed(el.dataset.pid); el.remove(); };
 })();

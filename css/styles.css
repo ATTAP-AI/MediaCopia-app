@@ -843,6 +843,7 @@ body.locked { overflow: hidden; }
 .live-card img.logo { object-fit: contain; background: #fff; padding: 6px; }
 .live-card img.logo.dk, .live-card img.logo.on-dark { background: #14141c; box-shadow: inset 0 0 0 1px var(--border); }
 :root[data-mode="dark"] .live-card img.logo.lt, :root:not([data-mode="dark"]) .live-card img.logo.dk { display: none; }
+.live-card img.art ~ img.logo { display: none; }   /* the logo is the fallback when there's no show artwork */
 .lg-filter { width: 190px; height: 32px; padding: 0 10px; font-size: 13px; }
 .lg-ch em { font-style: normal; font-variant-numeric: tabular-nums; color: var(--accent); margin-right: 2px; }
 .lg-prog.pending b { color: var(--muted); }
