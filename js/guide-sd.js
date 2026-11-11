@@ -25,7 +25,7 @@ MC.sdGuide = (() => {
   /* This device's copy of the sign-in and the loaded guide, encrypted with the vault key in IndexedDB (never synced or
      backed up). Reopening MediaCopia reuses it, so a reload doesn't sign in again or fetch the whole guide: Schedules
      Direct asks apps to refresh at most once an hour, and allows 100 sign-ins a day. */
-  const CACHE = 'sdGuide', CACHE_AAD = 'mediacopia-sdguide', FRESH = 2 * 3600e3;
+  const CACHE = 'sdGuide', CACHE_AAD = 'mediacopia-sdguide', FRESH = 2 * 3600e3, CACHE_V = 2;   // 2: with HD station IDs
   let cacheP = null, saveTimer = 0;
   const readCache = () => cacheP ||= (async () => {
     const k = MC.vault.key(), rec = await MC.vault.meta.get(CACHE);
@@ -36,11 +36,11 @@ MC.sdGuide = (() => {
     if (!k || !cfg.lineup) return;
     const stations = {}, progs = [], keep = {};
     items.forEach(it => {
-      stations[it.row] ||= { channel: it.channel, channelName: it.channelName, affiliate: it.affiliate, num: it.num, logo: it.logo, logoDark: it.logoDark };
+      stations[it.row] ||= { tune: it.tune, channel: it.channel, channelName: it.channelName, affiliate: it.affiliate, num: it.num, logo: it.logo, logoDark: it.logoDark };
       progs.push([it.row, it.pid, it.start, it.end, (it.isNew ? 1 : 0) | (it.live ? 2 : 0)]);
       if (details[it.pid]) keep[it.pid] = details[it.pid];   // not the failures: those are retried next time
     });
-    const data = { user: cfg.user, lineup: cfg.lineup, token: tok?.user === cfg.user ? tok : null, at: loadedAt, stations, progs, details: keep };
+    const data = { v: CACHE_V, user: cfg.user, lineup: cfg.lineup, token: tok?.user === cfg.user ? tok : null, at: loadedAt, stations, progs, details: keep };
     const { iv, ct } = await MC.crypto.encryptJSON(k, data, CACHE_AAD);
     await MC.vault.meta.set(CACHE, { iv, ct });
     cacheP = Promise.resolve(data);
@@ -154,13 +154,19 @@ MC.sdGuide = (() => {
     const cfg = g();
     if (!force && !items.length) {
       const c = await readCache();
-      if (c && c.lineup === cfg.lineup && c.user === cfg.user && Date.now() - c.at < FRESH && c.progs?.length) { restore(c); return items; }
+      if (c && c.v === CACHE_V && c.lineup === cfg.lineup && c.user === cfg.user && Date.now() - c.at < FRESH && c.progs?.length) { restore(c); return items; }
     }
     const lu = await api(`lineups/${encodeURIComponent(cfg.lineup)}`);
     const st = Object.fromEntries((lu.stations || []).map(s => [s.stationID, s]));
     const chan = {};   // stationID → lowest channel number on this lineup
     (lu.map || []).forEach(m => { if (m.stationID && m.channel && (!chan[m.stationID] || parseFloat(m.channel) < parseFloat(chan[m.stationID]))) chan[m.stationID] = m.channel; });
     const ids = Object.keys(chan);
+    /* Players like Spectrum's stream each channel's HD feed and tune by its station ID (CNBC on 015 is 10139, CNBC HD is
+       58780), so remember the HD sibling of each channel: same callsign, with "HD" on the end. */
+    const base = s => (s.callsign || s.name || '').toUpperCase().replace(/[\s-]*(HDTV|HD|DT)$/, '').replace(/[^A-Z0-9]/g, '');
+    const isHD = s => /HD(TV)?$/i.test(s.callsign || '') || /\bHD\b/i.test(s.name || '');
+    const hdOf = {};
+    ids.forEach(id => { const s = st[id]; if (s && isHD(s)) hdOf[base(s)] ||= id; });
     const now = Date.now(), dates = [...new Set([now - 6 * 3600e3, now, now + 24 * 3600e3].map(t => new Date(t).toISOString().slice(0, 10)))];
     const sched = await api('schedules', { method: 'POST', body: ids.map(stationID => ({ stationID, date: dates })) });
     const seen = new Set();
@@ -172,7 +178,7 @@ MC.sdGuide = (() => {
         const start = Date.parse(p.airDateTime), key = `${s.stationID}|${start}`;
         if (!start || seen.has(key)) return null;
         seen.add(key);
-        return { key, pid: p.programID, row: s.stationID, channel: sta.callsign || sta.name, channelName: sta.name, affiliate: sta.affiliate || '',
+        return { key, pid: p.programID, row: s.stationID, tune: hdOf[base(sta)] || s.stationID, channel: sta.callsign || sta.name, channelName: sta.name, affiliate: sta.affiliate || '',
           num: chan[s.stationID], logo, logoDark, start, end: start + (p.duration || 1800) * 1000, isNew: !!p.new, live: p.liveTapeDelay === 'Live',
           ...blank, genres: [] };
       }).filter(Boolean);

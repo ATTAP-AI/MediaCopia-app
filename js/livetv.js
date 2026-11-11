@@ -69,13 +69,18 @@ window.MC = window.MC || {};
   const time = t => new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
   /* A program → a recommendation-style record, so the details popup, How to watch and "+ Want to watch" all work. */
+  /* Open the provider's web player on this channel, where it can. The full guide's station IDs are Gracenote's, which
+     Spectrum's player takes as ?tmsid= for the channel's HD feed (p.tune, see guide-sd.js; not documented by Spectrum, so
+     it may change). Elsewhere: the provider's home. */
+  const TUNE = { spectrum: id => `https://watch.spectrum.net/livetv?tmsid=${encodeURIComponent(id)}` };
+  const tuneUrl = p => (ui.sd && p.row && TUNE[MC.myTV()?.id]?.(p.tune || p.row)) || '';
   const toRec = p => {
     const id = 'live-' + p.key;
     if (MC.recCache[id]?.title === p.show) return id;   // rebuilt once the full guide's details arrive
     MC.recCache[id] = {
       id, title: p.show, type: 'tv', creator: p.channel, year: p.year,
       blurb: [`${time(p.start)}–${time(p.end)} on ${p.num ? `${p.num} ` : ''}${p.channel}${p.se ? ` · ${p.se}` : ''}${p.ep ? ` · “${p.ep}”` : ''}.`, p.summary].filter(Boolean).join(' '),
-      where: [{ name: p.channelName || p.channel, access: !p.num && MC.isOTA?.(p.channel) ? 'broadcast' : 'cable', url: '', price: p.num ? `ch ${p.num}` : '' }],
+      where: [{ name: p.channelName || p.channel, access: !p.num && MC.isOTA?.(p.channel) ? 'broadcast' : 'cable', url: tuneUrl(p), price: p.num ? `ch ${p.num}` : '' }],
       source: 'live-tv',
     };
     return id;
