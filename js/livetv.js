@@ -111,10 +111,14 @@ window.MC = window.MC || {};
     const rank = p => (flag(p) === 'mine' ? 0 : flag(p) === 'foryou' ? 1 : 2) * 1e4 + (sd ? chNum(p) : bIndex(p.channel));
     const onNow = ui.items.filter(p => p.start <= now && p.end > now).sort((a, b) => rank(a) - rank(b));
     const label = p => p.show || '…';
+    // Both versions of a station's logo; css shows the one for the current theme (the hidden one isn't downloaded).
+    const logoImg = (src, cls) => `<img class="logo ${cls}" src="${E(src)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`;
     const nowCards = onNow.slice(0, 12).map(p => {
-      const pct = Math.round((now - p.start) / (p.end - p.start) * 100), f = flag(p), img = p.image || p.logo;
+      const pct = Math.round((now - p.start) / (p.end - p.start) * 100), f = flag(p);
       return `<button class="live-card ${f}" type="button" data-action="rec-details" data-rec="${toRec(p)}">
-        ${img ? `<img class="${p.image ? '' : 'logo'}" src="${E(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}
+        ${p.image ? `<img src="${E(p.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`
+          : p.logo && p.logoDark ? logoImg(p.logo, 'lt') + logoImg(p.logoDark, 'dk')
+          : p.logoDark ? logoImg(p.logoDark, 'on-dark') : p.logo ? logoImg(p.logo, '') : ''}
         <span class="lc-body"><span class="lc-ch">${p.num ? `${E(p.num)} · ` : ''}${E(p.channel)}${f === 'mine' ? ' · ★ yours' : f === 'foryou' ? ' · for you' : ''}${p.live ? ' · LIVE' : p.isNew ? ' · NEW' : ''}</span>
           <b>${E(label(p))}</b><span class="lc-ep">${E([p.se, p.ep].filter(Boolean).join(' · '))}</span>
           <span class="lc-bar"><i style="width:${pct}%"></i></span><span class="lc-time">Ends ${E(time(p.end))}</span></span>

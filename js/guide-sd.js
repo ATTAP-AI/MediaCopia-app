@@ -123,19 +123,27 @@ MC.sdGuide = (() => {
     items = (Array.isArray(sched) ? sched : []).flatMap(s => {
       const sta = st[s.stationID];
       if (!sta || !Array.isArray(s.programs)) return [];
-      const logo = (sta.stationLogo || [])[0]?.URL || sta.logo?.URL || '';
+      const { logo, logoDark } = logos(sta);
       return s.programs.map(p => {
         const start = Date.parse(p.airDateTime), key = `${s.stationID}|${p.airDateTime}`;
         if (!start || seen.has(key)) return null;
         seen.add(key);
         return { key, pid: p.programID, row: s.stationID, channel: sta.callsign || sta.name, channelName: sta.name, affiliate: sta.affiliate || '',
-          num: chan[s.stationID], logo, start, end: start + (p.duration || 1800) * 1000, isNew: !!p.new, live: p.liveTapeDelay === 'Live',
+          num: chan[s.stationID], logo, logoDark, start, end: start + (p.duration || 1800) * 1000, isNew: !!p.new, live: p.liveTapeDelay === 'Live',
           show: '', ep: '', se: '', genres: [], year: '', summary: '', image: '' };
       }).filter(Boolean);
     });
     items.forEach(apply);
     return items;
   }
+  /* Station logos come in versions for light and dark backgrounds (category: light, gray, dark, white). Many are white
+     artwork that vanishes on a light tile, so keep one of each and let the theme pick (css: .live-card img.lt / .dk). */
+  const logos = sta => {
+    const all = (sta.stationLogo || []).filter(l => l?.URL), pick = (...cats) => cats.map(c => all.find(l => l.category === c)).find(Boolean)?.URL || '';
+    const light = pick('light', 'gray') || (all.some(l => l.category) ? '' : all[0]?.URL) || sta.logo?.URL || '';
+    const dark = pick('dark', 'white');
+    return { logo: light, logoDark: dark };
+  };
   const apply = it => {
     const d = details[it.pid];
     if (d === undefined) return;
