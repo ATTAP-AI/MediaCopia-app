@@ -726,7 +726,7 @@ const calToolbar = (view, extra, empty = false) => `<div class="cal-toolbar">
       </div>
       ${empty ? '' : `<button class="btn sm" data-action="check-trailers" ${MC.ui.cal.trailers ? 'disabled' : ''} title="Check every trailer link still works, and find working ones (with backups) for the rest">${MC.ui.cal.trailers ? 'Checking trailers…' : '🎬 Check trailers'}</button>`}
     </div>`;
-const evChip = e => `<button class="cal-chip${e.dateConfidence === 'estimated' ? ' est' : ''}" ${MC.typeStyle(e.type)} data-action="ev-details" data-did="${MC.evDid(e)}" title="${E(e.title)}${e.creator ? ' — ' + E(e.creator) : ''}"><i aria-hidden="true">${MC.TYPE[e.type]?.icon || '📅'}</i><span>${E(e.title)}</span></button>`;
+const evChip = e => `<button class="cal-chip${e.dateConfidence === 'estimated' ? ' est' : ''}" ${MC.typeStyle(e.type)} data-action="ev-details" data-did="${MC.evDid(e)}" title="${E(e.title)}${e.creator ? ' — ' + E(e.creator) : ''}">${MC.thumb(e, 'xs')}<span>${E(e.title)}</span></button>`;
 const evTile = e => `<button class="cal-tile${e.dateConfidence === 'estimated' ? ' est' : ''}" ${MC.typeStyle(e.type)} data-action="ev-details" data-did="${MC.evDid(e)}">
       ${MC.thumb(e, 'tile')}<b>${E(e.title)}</b>${e.creator ? `<small>${E(e.creator)}</small>` : ''}</button>`;
 const dayLong = d => MC.fmtDate(d, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
