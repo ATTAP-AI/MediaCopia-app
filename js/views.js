@@ -5,7 +5,7 @@ MC.ui = {
   type: 'all',   // the media type picked in the header; filters every page
   lib: { status: 'all', q: '', sort: 'updated' },
   disc: { tab: 'local', localQ: '' },
-  cal: { past: false, finding: false, status: '', error: '', result: '', trailers: false, tStatus: '' },
+  cal: { view: '', at: '', past: false, finding: false, status: '', error: '', result: '', trailers: false, tStatus: '' },
   interests: { collapsed: {} },
   skipRender: false,
 };
@@ -660,6 +660,8 @@ MC.views.calendar = {
     const c = MC.ui.cal;
     const today = MC.today();
     const all = MC.allEvents().filter(e => MC.ui.type === 'all' || e.type === MC.ui.type);   // sorted by date
+    const view = calView();
+    if (view !== 'list') return calHead(c) + calToolbar(view, '') + calPeriod(view, c.at || today, all, today);
     const pastCount = all.filter(e => e.date < today).length;
     const events = c.past ? all : all.filter(e => e.date >= today);
     const months = [];
@@ -692,22 +694,113 @@ MC.views.calendar = {
       : `<div class="empty" style="padding:40px 24px"><div class="big">📅</div><h3>No upcoming ${E(what)} yet</h3>
           <p class="small">Add release dates yourself, set one on any library item, or let Claude find what’s coming for your interests.</p>
           <div class="row" style="justify-content:center"><button class="btn" data-action="add-drop">+ Add drop</button><button class="btn primary" data-action="find-drops">✨ Find upcoming drops</button></div></div>`;
-    return `
+    return `${calHead(c)}
+    ${calToolbar('list', pastCount ? `<button class="btn sm ghost" data-action="cal-past">${c.past ? 'Hide past' : `Show ${pastCount} past`}</button>` : '', !months.length)}
+    ${months.length ? `<nav class="cal-rail" aria-label="Jump to a date">${months.map(m => `<button class="rail-month" data-action="cal-jump" data-m="${m.key}" title="${m.n} ${m.n === 1 ? 'release' : 'releases'}">${E(monthLabel(m.key, { month: 'short' }))}${m.key.slice(0, 4) !== today.slice(0, 4) ? ` ’${m.key.slice(2, 4)}` : ''}</button>${m.days.map(d => `<button class="rail-day${d.date === today ? ' today' : ''}${d.date < today ? ' past' : ''}" data-action="cal-jump-day" data-d="${d.date}" aria-label="${E(MC.fmtDate(d.date, { weekday: 'long', month: 'long', day: 'numeric' }))}: ${d.evs.length} ${d.evs.length === 1 ? 'release' : 'releases'}"><span>${E(MC.fmtDate(d.date, { weekday: 'short' }))}</span><b>${+d.date.slice(8)}</b><i>${'•'.repeat(Math.min(d.evs.length, 4))}</i></button>`).join('')}`).join('')}</nav>` : ''}
+    ${body}
+    ${months.length ? '<p class="tiny muted">Dashed cards have an estimated date. Library items with a release date show here automatically.</p>' : ''}`;
+  },
+};
+/* The page title, progress and messages, shared by every view. */
+const calHead = c => `
     <div class="page-head"><div><h1>Calendar</h1><p class="muted">Only the days with something coming out, with the newest releases you follow and the picks you’re tracking.</p></div>
       <div class="row phone-only">${MC.pageActions('calendar')}</div></div>
     ${c.finding ? `<div class="status-line"><div class="spinner"></div><span data-cal-status>${E(c.status)}</span></div>` : ''}
     ${c.error ? `<div class="notice error" style="margin-bottom:14px">${E(c.error)}</div>` : ''}
     ${c.result ? `<div class="notice" style="margin-bottom:14px">${E(c.result)} <button class="btn sm ghost" data-action="cal-dismiss-result">OK</button></div>` : ''}
-    ${c.trailers ? `<div class="status-line"><div class="spinner"></div><span data-trailer-status>${E(c.tStatus)}</span></div>` : ''}
-    ${months.length ? `<div class="cal-toolbar">
-      ${pastCount ? `<button class="btn sm ghost" data-action="cal-past">${c.past ? 'Hide past' : `Show ${pastCount} past`}</button>` : ''}
-      <button class="btn sm" data-action="check-trailers" ${c.trailers ? 'disabled' : ''} title="Check every trailer link still works, and find working ones (with backups) for the rest">${c.trailers ? 'Checking trailers…' : '🎬 Check trailers'}</button>
+    ${c.trailers ? `<div class="status-line"><div class="spinner"></div><span data-trailer-status>${E(c.tStatus)}</span></div>` : ''}`;
+
+/* ---------- Views: List (every release day, below), Day, Week or Month ----------
+   The view picked in the dropdown is a setting, so it's how the Calendar opens next time (and on your other devices).
+   Clicking a day in Week or Month opens it in Day view for this visit only, with a way back. */
+const CAL_VIEWS = { list: 'List', day: 'Day', week: 'Week', month: 'Month' };
+const calView = () => MC.ui.cal.view || (CAL_VIEWS[MC.state.settings.calView] ? MC.state.settings.calView : 'list');
+const addDays = (iso, n) => { const d = MC.parseDate(iso); d.setDate(d.getDate() + n); return MC.isoDate(d); };
+// Weeks start on the locale's first day (Sunday in the US, Monday in most of Europe).
+const WEEK_START = (() => { try { const l = new Intl.Locale(navigator.language); const f = (l.getWeekInfo?.() || l.weekInfo)?.firstDay; return f ? f % 7 : 0; } catch { return 0; } })();
+const weekStart = iso => { const d = MC.parseDate(iso); return addDays(iso, -((d.getDay() - WEEK_START + 7) % 7)); };
+const calToolbar = (view, extra, empty = false) => `<div class="cal-toolbar">
+      <div class="row">
+        <label class="cal-view-pick"><span>View</span><select data-cal-view aria-label="Calendar view">${Object.entries(CAL_VIEWS).map(([k, l]) => `<option value="${k}"${k === view ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+        ${extra}
+      </div>
+      ${empty ? '' : `<button class="btn sm" data-action="check-trailers" ${MC.ui.cal.trailers ? 'disabled' : ''} title="Check every trailer link still works, and find working ones (with backups) for the rest">${MC.ui.cal.trailers ? 'Checking trailers…' : '🎬 Check trailers'}</button>`}
+    </div>`;
+const evChip = e => `<button class="cal-chip${e.dateConfidence === 'estimated' ? ' est' : ''}" ${MC.typeStyle(e.type)} data-action="ev-details" data-did="${MC.evDid(e)}" title="${E(e.title)}${e.creator ? ' — ' + E(e.creator) : ''}"><i aria-hidden="true">${MC.TYPE[e.type]?.icon || '📅'}</i><span>${E(e.title)}</span></button>`;
+const evTile = e => `<button class="cal-tile${e.dateConfidence === 'estimated' ? ' est' : ''}" ${MC.typeStyle(e.type)} data-action="ev-details" data-did="${MC.evDid(e)}">
+      ${MC.thumb(e, 'tile')}<b>${E(e.title)}</b>${e.creator ? `<small>${E(e.creator)}</small>` : ''}</button>`;
+const dayLong = d => MC.fmtDate(d, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+
+const calPeriod = (view, at, all, today) => {
+  const byDate = {};
+  all.forEach(e => (byDate[e.date] ||= []).push(e));
+  const cls = d => `${d === today ? ' today' : ''}${d < today ? ' past' : ''}`;
+  const count = n => `${n} ${n === 1 ? 'release' : 'releases'}`;
+  let title, body;
+  if (view === 'day') {
+    const evs = byDate[at] || [];
+    const prev = [...all].reverse().find(e => e.date < at)?.date, next = all.find(e => e.date > at)?.date;
+    title = `${E(dayLong(at))} <span class="countdown">${E(MC.countdownLabel(at))}</span>`;
+    body = `<div class="cal-dayview">
+      ${evs.length ? `<div class="cal-items">${evs.map(e => MC.eventCard(e)).join('')}</div>`
+        : `<div class="empty" style="padding:32px 24px"><div class="big">📅</div><h3>Nothing coming out this day</h3></div>`}
+      <div class="row cal-dayjump">
+        ${prev ? `<button class="btn sm ghost" data-action="cal-goto" data-d="${prev}">‹ ${E(MC.fmtDate(prev, { month: 'short', day: 'numeric' }))}</button>` : ''}
+        <button class="btn sm" data-action="add-drop" data-date="${at}">+ Add drop on this day</button>
+        ${next ? `<button class="btn sm ghost" data-action="cal-goto" data-d="${next}">Next release: ${E(MC.fmtDate(next, { month: 'short', day: 'numeric' }))} ›</button>` : ''}
+      </div></div>`;
+  } else if (view === 'week') {
+    const start = weekStart(at), days = Array.from({ length: 7 }, (_, i) => addDays(start, i)), end = days[6];
+    const n = days.reduce((t, d) => t + (byDate[d]?.length || 0), 0);
+    const range = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).formatRange(MC.parseDate(start), MC.parseDate(end));   // "Nov 15 – 21, 2026"
+    title = `${E(range)} <span class="pill">${count(n)}</span>`;
+    body = `<div class="cal-week">${days.map(d => `<div class="cal-wcol${cls(d)}">
+        <button class="cal-whead" data-action="cal-open-day" data-d="${d}" aria-label="${E(dayLong(d))}: ${count(byDate[d]?.length || 0)}"><span>${E(MC.fmtDate(d, { weekday: 'short' }))}</span><b>${+d.slice(8)}</b></button>
+        <div class="cal-wlist">${(byDate[d] || []).map(evTile).join('')}</div>
+        <button class="btn sm ghost add-day" data-action="add-drop" data-date="${d}" title="Add a drop on this day" aria-label="Add a drop on ${E(MC.fmtDate(d))}">+</button>
+      </div>`).join('')}</div>`;
+  } else {
+    const first = at.slice(0, 8) + '01', month = at.slice(0, 7);
+    const start = weekStart(first);
+    let last = MC.parseDate(first); last.setMonth(last.getMonth() + 1); last.setDate(0); last = MC.isoDate(last);
+    const cells = [];
+    for (let d = start; d <= last || cells.length % 7; d = addDays(d, 1)) cells.push(d);
+    const n = all.filter(e => e.date.startsWith(month)).length;
+    title = `${E(MC.fmtDate(first, { month: 'long', year: 'numeric' }))} <span class="pill">${count(n)}</span>`;
+    const SHOW = 3;
+    body = `<div class="cal-monthgrid">
+      ${cells.slice(0, 7).map(d => `<div class="cal-mdow">${E(MC.fmtDate(d, { weekday: 'short' }))}</div>`).join('')}
+      ${cells.map(d => { const evs = byDate[d] || []; return `<div class="cal-mcell${cls(d)}${d.startsWith(month) ? '' : ' out'}${evs.length ? ' has' : ''}">
+        <button class="cal-mday" data-action="cal-open-day" data-d="${d}" aria-label="${E(dayLong(d))}: ${count(evs.length)}">${+d.slice(8)}</button>
+        ${evs.slice(0, SHOW).map(evChip).join('')}
+        ${evs.length > SHOW ? `<button class="cal-more" data-action="cal-open-day" data-d="${d}">+${evs.length - SHOW} more</button>` : ''}
+      </div>`; }).join('')}
+    </div>`;
+  }
+  const unit = { day: 'day', week: 'week', month: 'month' }[view];
+  const drilled = MC.ui.cal.view === 'day' && ['week', 'month'].includes(MC.state.settings.calView);
+  return `<div class="cal-nav">
+      <button class="btn sm icon-btn" data-action="cal-step" data-n="-1" aria-label="Previous ${unit}" title="Previous ${unit}">‹</button>
+      <button class="btn sm" data-action="cal-today" ${at === today ? 'disabled' : ''}>Today</button>
+      <button class="btn sm icon-btn" data-action="cal-step" data-n="1" aria-label="Next ${unit}" title="Next ${unit}">›</button>
+      <h2>${title}</h2>
+      ${drilled ? `<button class="btn sm ghost" data-action="cal-back">← Back to ${CAL_VIEWS[MC.state.settings.calView]}</button>` : ''}
     </div>
-    <nav class="cal-rail" aria-label="Jump to a date">${months.map(m => `<button class="rail-month" data-action="cal-jump" data-m="${m.key}" title="${m.n} ${m.n === 1 ? 'release' : 'releases'}">${E(monthLabel(m.key, { month: 'short' }))}${m.key.slice(0, 4) !== today.slice(0, 4) ? ` ’${m.key.slice(2, 4)}` : ''}</button>${m.days.map(d => `<button class="rail-day${d.date === today ? ' today' : ''}${d.date < today ? ' past' : ''}" data-action="cal-jump-day" data-d="${d.date}" aria-label="${E(MC.fmtDate(d.date, { weekday: 'long', month: 'long', day: 'numeric' }))}: ${d.evs.length} ${d.evs.length === 1 ? 'release' : 'releases'}"><span>${E(MC.fmtDate(d.date, { weekday: 'short' }))}</span><b>${+d.date.slice(8)}</b><i>${'•'.repeat(Math.min(d.evs.length, 4))}</i></button>`).join('')}`).join('')}</nav>` : ''}
     ${body}
-    ${months.length ? '<p class="tiny muted">Dashed cards have an estimated date. Library items with a release date show here automatically.</p>' : ''}`;
-  },
+    <p class="tiny muted">Dashed entries have an estimated date. Library items with a release date show here automatically.</p>`;
 };
+MC.actions['cal-step'] = el => {
+  const c = MC.ui.cal, at = c.at || MC.today(), n = +el.dataset.n, v = calView();
+  if (v === 'day') c.at = addDays(at, n);
+  else if (v === 'week') c.at = addDays(at, 7 * n);
+  else { const d = MC.parseDate(at.slice(0, 8) + '01'); d.setMonth(d.getMonth() + n); c.at = MC.isoDate(d); }
+  MC.render();
+};
+MC.actions['cal-today'] = () => { MC.ui.cal.at = ''; MC.render(); };
+MC.actions['cal-goto'] = el => { MC.ui.cal.at = el.dataset.d; MC.render(); };
+MC.actions['cal-open-day'] = el => { Object.assign(MC.ui.cal, { view: 'day', at: el.dataset.d }); MC.render(); window.scrollTo(0, 0); };
+MC.actions['cal-back'] = () => { MC.ui.cal.view = ''; MC.render(); };
+
 /* The date strip pinned under the header: every release day, grouped by month. Tap to jump; while scrolling, the day
    you're on is highlighted and kept in view. */
 const calOffset = () => (document.getElementById('apphead')?.offsetHeight || 0) + (document.querySelector('.cal-rail')?.offsetHeight || 0) + 10;
@@ -717,6 +810,11 @@ MC.actions['cal-jump-day'] = el => calScrollTo(document.getElementById('cal-d-' 
 let calSpy = null;
 MC.views.calendar.mount = root => {
   if (calSpy) window.removeEventListener('scroll', calSpy);
+  root.querySelector('[data-cal-view]')?.addEventListener('change', e => {
+    const v = e.target.value;
+    MC.ui.cal.view = '';
+    MC.update(s => { s.settings.calView = v; });
+  });
   const rail = root.querySelector('.cal-rail');
   if (!rail) return;
   const doc = document.documentElement.style;

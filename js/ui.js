@@ -258,10 +258,15 @@ const evButtons = ev => {
     ${ev.kind !== 'library' && ev.id && !MC.findInLibrary(ev.title, ev.type) && MC.state.drops.some(d => d.id === ev.id) ? `<button class="btn sm ghost" data-action="drop-to-library" data-id="${ev.id}">+ Library</button>` : ''}
     ${link ? `<a class="btn sm ghost" href="${MC.esc(link)}" target="_blank" rel="noopener">Source ↗</a>` : ''}`;
 };
-MC.eventCard = (ev, { showDate = false, actions } = {}) => {
+/* Registers a drop for the details popup (data-action="ev-details" data-did=…) and returns its id. */
+MC.evDid = (ev, actions) => {
   const did = 'd' + MC.uid();
-  const buttons = actions ?? evButtons(ev);
-  MC.detailCache[did] = { ev, actions: buttons };
+  MC.detailCache[did] = { ev, actions: actions ?? evButtons(ev) };
+  return did;
+};
+MC.eventCard = (ev, { showDate = false, actions } = {}) => {
+  const did = MC.evDid(ev, actions);
+  const buttons = MC.detailCache[did].actions;
   const est = ev.dateConfidence === 'estimated';
   return MC.cineCard({
     rec: ev, cls: `clickable${est ? ' est' : ''}`, attrs: `data-action="ev-details" data-did="${did}" tabindex="0"`, play: { kind: 'event', did },
